@@ -1,0 +1,56 @@
+[build-system]
+# setuptools, matching the fleet's pure-Python package (zackees/ci.yml's
+# `ci-lint`). The soldr backend is for packages that ship a Rust CLI or a PyO3
+# extension; this one is stdlib-only Python, so it does not need it.
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-audit"
+version = "0.1.0"
+description = "Attribute agent context spend to the tools that caused it"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Zach Vorhies" }]
+dependencies = []
+
+[project.scripts]
+llm-audit = "llm_audit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/forge-ci/llm-audit"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.20.0",
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["llm_audit*"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C901", "RUF100"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.basedpyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportMissingImports = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
