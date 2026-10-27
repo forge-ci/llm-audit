@@ -341,6 +341,8 @@ def _subcommand(words: list[str]) -> str:
 
 def _owner_of(raw_head: str, words: list[str]) -> str:
     """The category of one simple command, or ``""`` if it owns nothing."""
+    # raw_head is a word from a shell command string, not a filesystem path we
+    # own, so os.path's text operations on it are the right tool here.
     head = os.path.basename(raw_head)
     if head.endswith((".py", ".sh", ".js")):
         head = head.rsplit(".", 1)[0]
@@ -417,7 +419,7 @@ def normalize_output(text: str) -> str:
 _PREFIXES = ("~", "$E", "$R", "$S", "$A", "$B", "$D", "$P", "$C", "$F", "$Z")
 
 
-def filekey(path: str) -> str | None:
+def filekey(path_text: str) -> str | None:
     """A comparable key for a path that may be absolute, relative or ~-prefixed.
 
     The last three components are used when present, which bridges
@@ -426,7 +428,9 @@ def filekey(path: str) -> str | None:
     to disambiguate it, so it returns ``None`` and is excluded rather than
     guessed at.
     """
-    p = path.strip().strip("'\"")
+    # path_text is a path scraped out of tool input or a shell command -- text
+    # to compare, not a filesystem path this code owns -- so it stays a str.
+    p = path_text.strip().strip("'\"")
     for prefix in _PREFIXES:
         if p.startswith(prefix + "/"):
             p = p[len(prefix) + 1 :]

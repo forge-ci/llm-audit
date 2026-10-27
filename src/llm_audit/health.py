@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import collections
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -91,7 +90,7 @@ def installed_versions() -> dict[str, dict[str, str | None]]:
                 installed = match.group(1) if match else None
             except (OSError, subprocess.SubprocessError):
                 installed = None
-        cargo = Path(os.path.expanduser(repo)) / "Cargo.toml"
+        cargo = Path(repo).expanduser() / "Cargo.toml"
         repo_version: str | None = None
         if cargo.is_file():
             for line in cargo.read_text(errors="replace").splitlines():
@@ -213,20 +212,18 @@ def render_verdict(gate: Gate) -> str:
     return "\n".join(lines)
 
 
-def load_state(path: str) -> dict[str, Any]:
+def load_state(path: Path) -> dict[str, Any]:
     try:
-        with open(path) as handle:
+        with path.open() as handle:
             loaded: Any = json.load(handle)
     except (OSError, ValueError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
 
-def save_state(path: str, gate: Gate) -> None:
-    parent = os.path.dirname(os.path.abspath(path))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w") as handle:
+def save_state(path: Path, gate: Gate) -> None:
+    path.resolve().parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as handle:
         json.dump(
             {
                 "avoidable_pct": gate.avoidable_pct,

@@ -16,6 +16,7 @@ import collections
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .aggregate import bar, human_bytes, pct
 from .classify import PATH_RE, classify_command, filekey
@@ -35,6 +36,8 @@ READ_TOOLS: frozenset[str] = frozenset(
 
 def read_targets(tool: str, command: str, file_path: str) -> list[str]:
     """Files this call reads, if it is a read-ish call."""
+    # command/file_path are shell and tool-input text and the results are path
+    # strings scraped from that text -- none of them are filesystem paths we own.
     if tool == "Read":
         return [file_path] if file_path else []
     if tool != "Bash" or not command:
@@ -92,7 +95,7 @@ def analyze_rereads(jobs: Iterable[Job]) -> RereadVerdict:
     rereads_per_file: collections.Counter[str] = collections.Counter()
 
     for job in jobs:
-        read = read_session(job.path, job.kind)
+        read = read_session(job.path, job.kind, job.since)
         if not read.responses:
             continue
         events = _session_events(read)
@@ -169,8 +172,8 @@ class PollVerdict:
     exposure_terminal: int = 0
     by_sector: collections.Counter[str] = field(default_factory=collections.Counter)
     by_sector_exposure: collections.Counter[str] = field(default_factory=collections.Counter)
-    streaks: list[tuple[int, str]] = field(default_factory=list)
-    worst_sessions: list[tuple[int, int, str]] = field(default_factory=list)
+    streaks: list[tuple[int, Path]] = field(default_factory=list)
+    worst_sessions: list[tuple[int, int, Path]] = field(default_factory=list)
 
 
 def analyze_polls(jobs: Iterable[Job]) -> PollVerdict:
@@ -183,7 +186,7 @@ def analyze_polls(jobs: Iterable[Job]) -> PollVerdict:
     """
     verdict = PollVerdict()
     for job in jobs:
-        read = read_session(job.path, job.kind)
+        read = read_session(job.path, job.kind, job.since)
         if not read.responses:
             continue
         streak = 0
@@ -223,8 +226,6 @@ def analyze_polls(jobs: Iterable[Job]) -> PollVerdict:
 
 
 def render_polls(verdict: PollVerdict, top: int = 12) -> str:
-    import os
-
     lines = [
         "# poll audit: what did the gh traffic actually learn?",
         f"\npoll-shaped gh calls          : {verdict.calls:,}",
@@ -245,7 +246,7 @@ def render_polls(verdict: PollVerdict, top: int = 12) -> str:
         counts = sorted(entry[0] for entry in verdict.streaks)
         lines.append("\n## longest unbroken pending-poll streak per session")
         for streak, path in verdict.streaks[:top]:
-            lines.append(f"   {streak:>4} consecutive  {os.path.basename(path)}")
+            lines.append(f"   {streak:>4} consecutive  {path.name}")
         lines.append(f"\n   sessions with a streak > 1 : {len(counts)}")
         lines.append(f"   median streak              : {counts[len(counts) // 2]}")
         lines.append(f"   p90 streak                 : {counts[int(len(counts) * 0.9)]}")
@@ -256,7 +257,7 @@ def render_polls(verdict: PollVerdict, top: int = 12) -> str:
             share = pct(pending, total)
             lines.append(
                 f"   {human_bytes(pending):>9} wasted of {human_bytes(total):>9} "
-                f"({share:4.1f}%)  {os.path.basename(path)}"
+                f"({share:4.1f}%)  {path.name}"
             )
     return "\n".join(lines)
 
@@ -285,7 +286,7 @@ def analyze_when(jobs: Iterable[Job], min_requests: int = 20) -> WhenVerdict:
     """
     verdict = WhenVerdict()
     for job in jobs:
-        read = read_session(job.path, job.kind)
+        read = read_session(job.path, job.kind, job.since)
         if read.responses < min_requests:
             continue
         verdict.sessions += 1

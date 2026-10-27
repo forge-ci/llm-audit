@@ -64,7 +64,7 @@ def write_transcript(
 
 
 def analyze(path: Path, kind: str = "main") -> SessionReport:
-    return analyze_session(read_session(str(path), kind), str(path), "test", kind)
+    return analyze_session(read_session(path, kind), path, "test", kind)
 
 
 def test_exposure_multiplies_by_later_requests(tmp_path: Path) -> None:

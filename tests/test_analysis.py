@@ -10,7 +10,7 @@ from llm_audit.corpus import Job
 
 
 def jobs(*paths: Path) -> list[Job]:
-    return [Job(str(p), "test", "main") for p in paths]
+    return [Job(p, "test", "main") for p in paths]
 
 
 def test_reread_without_an_edit_is_gratuitous(tmp_path: Path) -> None:

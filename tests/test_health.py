@@ -18,7 +18,7 @@ from llm_audit.transcript import SessionReport, analyze_session, read_session
 def build_rows(tmp_path: Path, name: str, command: str, text: str) -> SessionReport:
     target = tmp_path / name
     write_calls(target, [("Bash", bash(command), text)] * 3)
-    return analyze_session(read_session(str(target), "main"), str(target), "corpus-a", "main")
+    return analyze_session(read_session(target, "main"), target, "corpus-a", "main")
 
 
 def test_verdict_has_no_decimals_or_clock(tmp_path: Path) -> None:
@@ -67,7 +67,7 @@ def test_delta_rule_needs_a_baseline(tmp_path: Path) -> None:
 def test_new_signature_needs_a_baseline(tmp_path: Path) -> None:
     target = tmp_path / "s.jsonl"
     write_calls(target, [("Bash", bash("cargo test"), "ok")] * 25)
-    row = analyze_session(read_session(str(target), "main"), str(target), "corpus-a", "main")
+    row = analyze_session(read_session(target, "main"), target, "corpus-a", "main")
     # first run: no baseline, so no new_signature finding even at 25 calls
     assert not any(
         f.rule == "new_signature_calls"
@@ -81,6 +81,6 @@ def test_new_signature_needs_a_baseline(tmp_path: Path) -> None:
 def test_totals_are_honest_on_an_empty_report(tmp_path: Path) -> None:
     target = tmp_path / "s.jsonl"
     target.write_text("")
-    row = analyze_session(read_session(str(target), "main"), str(target), "c", "main")
+    row = analyze_session(read_session(target, "main"), target, "c", "main")
     assert totals([row]).exposure == 0
     assert totals([row]).requests == 0

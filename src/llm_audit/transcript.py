@@ -24,14 +24,16 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import os
 import re
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from .classify import classify_command, coarse, filekey, normalize_output
+from .window import in_window
 
 # An empty result carries no information at all -- it is what every `sleep 60`
 # in a poll loop produces -- so it gets a sentinel digest instead of being
@@ -51,6 +53,8 @@ class Call:
     tool: str
     category: str
     signature: str
+    # command and file_path are captured verbatim from the tool's JSON input, so
+    # they stay str: they are shell/command text, not filesystem paths we own.
     command: str
     file_path: str
     tool_input: dict[str, Any]
@@ -132,9 +136,9 @@ _TOOL_CATEGORY: dict[str, str] = {
 }
 
 
-def iter_records(path: str) -> Iterator[dict[str, Any]]:
+def iter_records(path: Path) -> Iterator[dict[str, Any]]:
     """Stream one transcript's records, skipping blank and unparseable lines."""
-    opener = gzip.open if path.endswith(".gz") else open
+    opener = gzip.open if path.name.endswith(".gz") else open
     with opener(path, "rt", errors="replace") as handle:
         for line in handle:
             line = line.strip()
@@ -253,8 +257,15 @@ def _take_results(
     out: SessionRead,
     pending: dict[str, Call],
     is_side: bool,
+    drop_unmatched: bool = False,
 ) -> None:
-    """Record the results a request received, attributing each to its call."""
+    """Record the results a request received, attributing each to its call.
+
+    ``drop_unmatched`` is set when a time window is active: a result whose
+    ``tool_use`` fell outside the window has no call to attach to, and
+    inventing an "unknown" bucket for it would report out-of-window work as
+    in-window.
+    """
     for block in blocks:
         if block.get("type") != "tool_result":
             continue
@@ -266,6 +277,8 @@ def _take_results(
         use_id = block.get("tool_use_id")
         call = pending.pop(use_id, None) if isinstance(use_id, str) else None
         if call is None:
+            if drop_unmatched:
+                continue
             call = Call("?", "unknown", "?", "", "", {})
         out.results.append(
             Result(
@@ -277,13 +290,19 @@ def _take_results(
         )
 
 
-def read_session(path: str, kind: str = "main") -> SessionRead:
+def read_session(path: Path, kind: str = "main", since: datetime | None = None) -> SessionRead:
     """One pass over a transcript.
 
     ``kind`` controls sidechain handling. A main session's file can embed
     sidechain records that belong to a subagent, but a subagent's own file is
     sidechain from top to bottom: skipping there would zero it, and subagent
     context is billed like any other.
+
+    ``since`` scopes the pass to a time window. Only records at or after the
+    cutoff are read, so ``responses``, ``usage`` and every exposure figure come
+    out as "what this window cost" rather than "what the session cost". A
+    session that began three days ago therefore contributes only its in-window
+    requests and results.
     """
     skip_sidechain = kind == "main"
     out = SessionRead()
@@ -292,6 +311,8 @@ def read_session(path: str, kind: str = "main") -> SessionRead:
 
     for record in iter_records(path):
         rtype = record.get("type")
+        if not in_window(record.get("timestamp"), since):
+            continue
         if rtype == "system":
             if "compact" in str(record.get("subtype") or ""):
                 out.compactions += 1
@@ -307,7 +328,7 @@ def read_session(path: str, kind: str = "main") -> SessionRead:
             _take_assistant(record, blocks, out, pending, seen_ids)
         else:
             is_side = bool(record.get("isSidechain")) and skip_sidechain
-            _take_results(blocks, out, pending, is_side)
+            _take_results(blocks, out, pending, is_side, drop_unmatched=since is not None)
     return out
 
 
@@ -438,7 +459,7 @@ def _avoidable_requests(read: SessionRead, informative: list[bool]) -> tuple[lis
     return avoidable, tokens
 
 
-def analyze_session(read: SessionRead, file: str, corpus: str, kind: str) -> SessionReport:
+def analyze_session(read: SessionRead, file: Path, corpus: str, kind: str) -> SessionReport:
     """Turn one transcript pass into the metric row."""
     total_responses = read.responses
     tool_calls: Counter[str] = Counter()
@@ -530,8 +551,8 @@ def analyze_session(read: SessionRead, file: str, corpus: str, kind: str) -> Ses
     avoidable, avoidable_tokens = _avoidable_requests(read, informative)
 
     return SessionReport(
-        file=file,
-        session_id=os.path.basename(file).rsplit(".", 1)[0],
+        file=str(file),
+        session_id=file.name.rsplit(".", 1)[0],
         corpus=corpus,
         kind=kind,
         cwd=read.cwd,
