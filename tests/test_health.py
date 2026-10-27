@@ -53,6 +53,17 @@ def test_avoidable_rise_fires_against_a_baseline(tmp_path: Path) -> None:
     assert any(f.rule == "avoidable_pct_delta" for f in gate.findings)
 
 
+def test_delta_rule_needs_a_baseline(tmp_path: Path) -> None:
+    """A first run has nothing to rise from, so the delta rule must stay quiet."""
+    row = build_rows(tmp_path, "s.jsonl", "sleep 60", "")
+    first = evaluate([row], [row], {}, check_versions=False)
+    assert not any(f.rule == "avoidable_pct_delta" for f in first.findings)
+
+    # with a real baseline, the same rows may legitimately fire
+    later = evaluate([row], [row], {"avoidable_pct": 0.0}, check_versions=False)
+    assert any(f.rule == "avoidable_pct_delta" for f in later.findings)
+
+
 def test_new_signature_needs_a_baseline(tmp_path: Path) -> None:
     target = tmp_path / "s.jsonl"
     write_calls(target, [("Bash", bash("cargo test"), "ok")] * 25)

@@ -128,7 +128,10 @@ def evaluate(
     if isinstance(delta, (int, float)):
         previous_pct = float(delta)
     rose = gate.avoidable_pct - previous_pct
-    if rose > RULES["avoidable_pct_delta"]:
+    # a rise can only be judged against a baseline; on the first run there is
+    # nothing to rise from, and treating that as +7.6 points would alert on
+    # every fresh state file
+    if "avoidable_pct" in previous and rose > RULES["avoidable_pct_delta"]:
         gate.findings.append(
             Finding(
                 "avoidable_pct_delta",
