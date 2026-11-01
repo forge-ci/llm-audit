@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .classify import coarse
-from .transcript import SessionReport, Usage
+from .transcript import BYTES_PER_TOKEN, SessionReport, Usage
 
 
 def merge(rows: Iterable[SessionReport], field: str) -> Counter[str]:
@@ -42,6 +42,9 @@ class Totals:
     tool_calls: int = 0
     result_bytes: int = 0
     exposure: int = 0
+    image_results: int = 0
+    image_tokens: int = 0
+    image_payload_bytes: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     compactions: int = 0
@@ -56,6 +59,9 @@ def totals(rows: list[SessionReport]) -> Totals:
         tool_calls=sum(r.tool_calls for r in rows),
         result_bytes=sum(r.result_bytes for r in rows),
         exposure=sum(r.exposure_bytes for r in rows),
+        image_results=sum(r.image_results for r in rows),
+        image_tokens=sum(r.image_tokens for r in rows),
+        image_payload_bytes=sum(r.image_payload_bytes for r in rows),
         input_tokens=sum(r.usage.billed for r in rows),
         output_tokens=sum(r.usage.output for r in rows),
         compactions=sum(r.compactions for r in rows),
@@ -151,6 +157,13 @@ def render_report(rows: list[SessionReport], top: int = 15, label: str = "") -> 
     lines.append(f"output tokens          : {total.output_tokens:,}")
     lines.append(f"tool calls             : {total.tool_calls:,}")
     lines.append(f"tool-result bytes      : {human_bytes(total.result_bytes)}")
+    if total.image_results:
+        lines.append(
+            f"image results          : {total.image_results:,} at vision cost "
+            f"({human_tokens(total.image_tokens)} tokens ~ "
+            f"{human_bytes(total.image_tokens * BYTES_PER_TOKEN)}); "
+            f"{human_bytes(total.image_payload_bytes)} of base64 payload is not text"
+        )
     lines.append(
         f"context exposure       : {human_bytes(total.exposure)} (bytes x requests that follow)"
     )

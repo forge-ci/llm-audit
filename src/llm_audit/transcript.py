@@ -21,6 +21,7 @@ and its own ``usage`` row measures the bill.
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import json
@@ -68,6 +69,10 @@ class Result:
     size: int
     text: str
     responses_before: int
+    # Vision tokens this result cost, and the base64 payload it was delivered
+    # as, when it is an image. Zero for text.
+    image_tokens: int = 0
+    image_payload: int = 0
 
 
 @dataclass(slots=True)
@@ -162,25 +167,122 @@ def _blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
     return [b for b in content if isinstance(b, dict)]
 
 
-def result_bytes(block: dict[str, Any]) -> int:
-    """Bytes of the text a tool result actually contributes to the context."""
+# A vision image is billed by its pixels, not by the length of its base64
+# payload. A 320 kB screenshot is ~1,000 tokens -- about 4 kB of context --
+# while 320 kB of text is ~80,000 tokens. Counting the payload made screenshots
+# look like 57 % of all exposure on 2026-11-01 when they were under 2 % of the
+# tokens, so the audit steered every optimisation at the wrong subsystem.
+BYTES_PER_TOKEN = 4
+# Tokens for an image whose header we cannot parse: a full desktop screenshot.
+DEFAULT_IMAGE_TOKENS = 2_000
+# Longest base64 prefix decoded to find image dimensions.
+_IMAGE_HEADER_CHARS = 8_000
+
+
+def _png_size(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 24 or raw[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    width = int.from_bytes(raw[16:20], "big")
+    height = int.from_bytes(raw[20:24], "big")
+    return (width, height) if width and height else None
+
+
+def _gif_size(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 10 or raw[:3] != b"GIF":
+        return None
+    width = int.from_bytes(raw[6:8], "little")
+    height = int.from_bytes(raw[8:10], "little")
+    return (width, height) if width and height else None
+
+
+def _jpeg_size(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 4 or raw[:2] != b"\xff\xd8":
+        return None
+    offset = 2
+    while offset + 9 < len(raw):
+        if raw[offset] != 0xFF:
+            offset += 1
+            continue
+        marker = raw[offset + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            offset += 2
+            continue
+        segment = int.from_bytes(raw[offset + 2 : offset + 4], "big")
+        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB}:
+            height = int.from_bytes(raw[offset + 5 : offset + 7], "big")
+            width = int.from_bytes(raw[offset + 7 : offset + 9], "big")
+            return (width, height) if width and height else None
+        if segment < 2:
+            return None
+        offset += 2 + segment
+    return None
+
+
+def _image_size(raw: bytes) -> tuple[int, int] | None:
+    return _png_size(raw) or _gif_size(raw) or _jpeg_size(raw)
+
+
+def image_tokens(source: dict[str, Any]) -> int:
+    """Vision tokens one image block costs, from its pixel dimensions.
+
+    Anthropic bills an image at ``width * height / 750`` tokens (a 390x1600
+    phone screenshot is 832). An unparseable header falls back to a full
+    screenshot rather than to the base64 length, which would put us back where
+    we started.
+    """
+    data = source.get("data")
+    if not isinstance(data, str) or not data:
+        return DEFAULT_IMAGE_TOKENS
+    try:
+        raw = base64.b64decode(data[:_IMAGE_HEADER_CHARS])
+    except (ValueError, TypeError):
+        return DEFAULT_IMAGE_TOKENS
+    size = _image_size(raw) if raw else None
+    if size is None:
+        return DEFAULT_IMAGE_TOKENS
+    width, height = size
+    return max(1, (width * height) // 750)
+
+
+def result_detail(block: dict[str, Any]) -> tuple[int, int, int]:
+    """``(context_bytes, image_tokens, image_payload_bytes)`` for one result.
+
+    ``context_bytes`` is what the result really costs to keep in the window:
+    text bytes as written, image payloads at their vision-token equivalent.
+    """
     content = block.get("content")
     if content is None:
         content = block.get("text")
     if isinstance(content, str):
-        return len(content)
-    if isinstance(content, list):
-        total = 0
-        for item in content:
-            if isinstance(item, str):
-                total += len(item)
-            elif isinstance(item, dict):
-                text = item.get("text")
-                total += len(text) if isinstance(text, str) else len(json.dumps(item))
-        return total
-    if content is None:
-        return 0
-    return len(json.dumps(content))
+        return (len(content), 0, 0)
+    if not isinstance(content, list):
+        if content is None:
+            return (0, 0, 0)
+        return (len(json.dumps(content)), 0, 0)
+    total = 0
+    tokens = 0
+    payload = 0
+    for item in content:
+        if isinstance(item, str):
+            total += len(item)
+        elif isinstance(item, dict):
+            if item.get("type") == "image":
+                source = item.get("source")
+                source = source if isinstance(source, dict) else item
+                cost = image_tokens(source)
+                tokens += cost
+                data = source.get("data")
+                payload += len(data) if isinstance(data, str) else 0
+                total += cost * BYTES_PER_TOKEN
+                continue
+            text = item.get("text")
+            total += len(text) if isinstance(text, str) else len(json.dumps(item))
+    return (total, tokens, payload)
+
+
+def result_bytes(block: dict[str, Any]) -> int:
+    """Context bytes one tool result contributes, images at vision cost."""
+    return result_detail(block)[0]
 
 
 def result_text(block: dict[str, Any]) -> str:
@@ -269,7 +371,7 @@ def _take_results(
     for block in blocks:
         if block.get("type") != "tool_result":
             continue
-        size = result_bytes(block)
+        size, img_tokens, img_payload = result_detail(block)
         if is_side:
             out.sidechain_results += 1
             out.sidechain_bytes += size
@@ -286,6 +388,8 @@ def _take_results(
                 size=size,
                 text=result_text(block),
                 responses_before=out.responses,
+                image_tokens=img_tokens,
+                image_payload=img_payload,
             )
         )
 
@@ -373,6 +477,9 @@ class SessionReport:
     tool_results: int
     result_bytes: int
     exposure_bytes: int
+    image_results: int
+    image_tokens: int
+    image_payload_bytes: int
     sidechain_results: int
     sidechain_bytes: int
     usage: Usage
@@ -501,6 +608,9 @@ def analyze_session(read: SessionRead, file: Path, corpus: str, kind: str) -> Se
     empty_calls = empty_bytes = empty_exposure = 0
     total_result_bytes = 0
     total_exposure = 0
+    image_results = 0
+    image_tokens = 0
+    image_payload_bytes = 0
 
     for result in read.results:
         cat = result.call.category
@@ -509,6 +619,10 @@ def analyze_session(read: SessionRead, file: Path, corpus: str, kind: str) -> Se
         exposure = size * remaining
         total_result_bytes += size
         total_exposure += exposure
+        if result.image_tokens:
+            image_results += 1
+            image_tokens += result.image_tokens
+            image_payload_bytes += result.image_payload
         bytes_by_cat[cat] += size
         exposure_by_cat[cat] += exposure
         calls_by_cat[cat] += 1
@@ -562,6 +676,9 @@ def analyze_session(read: SessionRead, file: Path, corpus: str, kind: str) -> Se
         tool_results=len(read.results),
         result_bytes=total_result_bytes,
         exposure_bytes=total_exposure,
+        image_results=image_results,
+        image_tokens=image_tokens,
+        image_payload_bytes=image_payload_bytes,
         sidechain_results=read.sidechain_results,
         sidechain_bytes=read.sidechain_bytes,
         usage=_sum_usage(read.usage),
@@ -676,6 +793,9 @@ def from_dict(raw: dict[str, Any]) -> SessionReport:
         tool_results=d_int("tool_results"),
         result_bytes=d_int("result_bytes"),
         exposure_bytes=d_int("exposure_bytes"),
+        image_results=d_int("image_results"),
+        image_tokens=d_int("image_tokens"),
+        image_payload_bytes=d_int("image_payload_bytes"),
         sidechain_results=d_int("sidechain_results"),
         sidechain_bytes=d_int("sidechain_bytes"),
         usage=usage,
@@ -727,7 +847,9 @@ __all__ = [
     "from_dict",
     "iter_records",
     "normalize_signature",
+    "image_tokens",
     "read_session",
     "result_bytes",
+    "result_detail",
     "result_text",
 ]

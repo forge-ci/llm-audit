@@ -98,6 +98,13 @@ stay quiet. `verdict: OK` means nothing tripped a threshold.
 
 ## Design notes
 
+- **Images are billed by pixels, not by payload.** A screenshot arrives as
+  ~300 kB of base64 and costs ~800-2 000 vision tokens -- about 3-8 kB of
+  context -- so `width * height / 750` tokens are charged at 4 bytes each and
+  the payload is reported separately. Counting the payload made `file` 57 % of
+  2.2 GB on 2026-11-01 when images were under 2 % of the tokens and the real
+  leader was `sed`, which sent the whole optimisation fleet at the wrong
+  subsystem.
 - **Sidechain transcripts.** A main session's file can embed sidechain records
   belonging to a subagent, but a subagent's own file is sidechain from top to
   bottom. Skipping sidechain rows unconditionally zeroes every subagent
